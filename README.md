@@ -62,6 +62,7 @@ that route does **not** stick. `WSDNS` does. Details in
 | `foobot_service.py` | The local service: a permissive MQTT broker that receives the device's readings, decodes them, computes the pollution index, drives the LED, and (optionally) pushes to Home Assistant. |
 | `pollution.py` | The reverse-engineered calibration (raw → real units) and the `allpollu` pollution-index formula that drives the ring colour. Self-tests with `python3 pollution.py`. |
 | `sandbox_test.py` | End-to-end test with a simulated device, no hardware/network needed. |
+| `webapp/app.py` | Optional single-page web UI tying it all together: Wi-Fi setup, LED, and the local/cloud network switch, with a live log. |
 | `config/dnsmasq-foobot.conf` | The one DNS rewrite: `broker-gw-nc.foobot.io` → your host. |
 | `systemd/foobot-local.service` | Run the service as a systemd unit. |
 | `docs/WIFI.md` | How to reconnect the Foobot to Wi-Fi without the app (the provisioning protocol). |
@@ -162,6 +163,32 @@ Turning the ring back **on** requires a module reboot (`foobot_at.py`, `AT+Z`) �
 brightness alone won't relight a ring that's off. The built-in night scheduler in
 `foobot_service.py` (`LED_OFF_H`/`LED_ON_H`, or a hot-reloaded `led_config.json`)
 uses this. Full explanation in [`docs/PROTOCOL.md`](docs/PROTOCOL.md).
+
+## Web interface (optional, last step)
+
+If you'd rather not use the command line, `webapp/app.py` serves a single page
+(default `http://<host>:8099`) that wraps everything above with a live log:
+
+- **Status** — whether the Foobot is seen on the LAN (by its MAC).
+- **Wi-Fi setup** — scan for the device's config-mode AP and push your home
+  Wi-Fi (the `provision.py` flow, no CLI).
+- **LED ring** — on (reboot) / off / brightness, and the night schedule editor.
+- **Network mode** — one click to switch the device between your local host and
+  the cloud (handy: switch it back to cloud before shutting your host down).
+
+Pure standard library. It shells out to `nmcli`/`rfkill` for the Wi-Fi steps, so
+run it as the provided systemd unit with passwordless sudo for those two:
+
+```bash
+# configure device MAC/IP/UUID in the unit first
+sudo cp webapp/foobot-web.service /etc/systemd/system/
+sudo systemctl enable --now foobot-web
+```
+
+Config is via env vars (`FOOBOT_MAC`, `FOOBOT_IP`, `FOOBOT_UUID`, `HOME_SSID`,
+`LOCAL_IP`, `FOOBOT_DIR`); see the top of `webapp/app.py`. The Wi-Fi password is
+never stored or logged. It reuses `foobot_at.py` and the service's `inject` /
+`led_config.json` files, so keep it alongside the rest of the repo.
 
 ---
 

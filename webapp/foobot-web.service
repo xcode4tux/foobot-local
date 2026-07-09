@@ -1,0 +1,24 @@
+[Unit]
+Description=Foobot local web control (Wi-Fi setup + LED + network mode)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust User/paths to your setup. Serves on http://<host>:8099.
+# The user needs passwordless sudo for: nmcli, rfkill (Wi-Fi scan/connect).
+User=pi
+WorkingDirectory=/home/pi/foobot-local/webapp
+Environment=FOOBOT_MAC=REPLACE_WITH_DEVICE_MAC          # e.g. aa:bb:cc:dd:ee:ff
+Environment=FOOBOT_IP=REPLACE_WITH_DEVICE_LAN_IP        # expected/last-known IP
+Environment=FOOBOT_UUID=REPLACE_WITH_DEVICE_UUID
+# Environment=HOME_SSID=MyHome-2.4GHz                   # prefilled in the form
+# Environment=LOCAL_IP=192.168.1.50                     # this host (else auto-detected)
+# Environment=WLAN_IFACE=wlan0
+# Environment=FOOBOT_DIR=/home/pi/foobot-local          # shared with foobot_service.py
+ExecStart=/usr/bin/python3 -u /home/pi/foobot-local/webapp/app.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
