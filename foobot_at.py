@@ -69,7 +69,7 @@ LOCAL_IP  = os.environ.get("LOCAL_IP", "") or _auto_local_ip()
 def _require_foobot_ip():
     if not FOOBOT_IP:
         sys.exit("Set FOOBOT_IP to the Foobot's LAN address, e.g. "
-                 "FOOBOT_IP=192.168.1.24 python3 foobot_at.py")
+                 "FOOBOT_IP=192.168.1.42 python3 foobot_at.py")
 
 
 def open_session(attempts=1, delay=3.0, verbose=True):

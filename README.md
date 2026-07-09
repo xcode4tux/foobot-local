@@ -56,12 +56,15 @@ that route does **not** stick. `WSDNS` does. Details in
 
 | File | Role |
 |---|---|
+| `provision.py` | Reconnect the Foobot to your Wi-Fi without the app (reconstructed from the official APK). Needed only if the device fell off the network. |
+| `scan.sh` / `join.sh` | Helpers to find and join the Foobot's config-mode access point before provisioning. |
 | `foobot_at.py` | Reconfigure the module remotely over UDP 48899. Read config, `--to-local`, `--to-cloud`, `--selftest` (safe dry-write). |
 | `foobot_service.py` | The local service: a permissive MQTT broker that receives the device's readings, decodes them, computes the pollution index, drives the LED, and (optionally) pushes to Home Assistant. |
 | `pollution.py` | The reverse-engineered calibration (raw → real units) and the `allpollu` pollution-index formula that drives the ring colour. Self-tests with `python3 pollution.py`. |
 | `sandbox_test.py` | End-to-end test with a simulated device, no hardware/network needed. |
 | `config/dnsmasq-foobot.conf` | The one DNS rewrite: `broker-gw-nc.foobot.io` → your host. |
 | `systemd/foobot-local.service` | Run the service as a systemd unit. |
+| `docs/WIFI.md` | How to reconnect the Foobot to Wi-Fi without the app (the provisioning protocol). |
 | `docs/PROTOCOL.md` | Full protocol notes: MQTT topics, calibration, LED behaviour, the AT channel. |
 | `docs/RECOVERY.md` | Put the device back on the cloud (one command), or recover if your host dies. |
 
@@ -72,11 +75,16 @@ that route does **not** stick. `WSDNS` does. Details in
 You need: an always-on Linux host on the same LAN as the Foobot, Python 3, and
 `dnsmasq` (or any DNS you can add one record to).
 
+**0 — (only if the Foobot isn't on your Wi-Fi)** Reconnect it first. Since the
+setup app is gone, use the reconstructed provisioning protocol — see
+[`docs/WIFI.md`](docs/WIFI.md): `scan.sh` → `join.sh` → `provision.py`. Skip this
+step if the device is already on your LAN.
+
 **1 — Find your values.** The Foobot's LAN IP (from your router), and your host's
 LAN IP. Read the device's current config (safe, read-only):
 
 ```bash
-FOOBOT_IP=192.168.1.24 python3 foobot_at.py
+FOOBOT_IP=192.168.1.42 python3 foobot_at.py
 ```
 
 This prints `WSDNS`, `SOCKB`, `WANN`, SSID and firmware. Note the device UUID
@@ -96,7 +104,7 @@ dig +short api.foobot.io          @127.0.0.1   # -> real cloud IP (still forward
 **3 — Start the local service** (listens on TCP 1883):
 
 ```bash
-FOOBOT_UUID=<device-uuid> FOOBOT_IP=192.168.1.24 python3 foobot_service.py
+FOOBOT_UUID=<device-uuid> FOOBOT_IP=192.168.1.42 python3 foobot_service.py
 ```
 
 With no `HA_TOKEN` it runs in **dry-run** and just logs the decoded readings — a
@@ -107,10 +115,10 @@ good way to confirm the pipeline before wiring up a dashboard. See
 
 ```bash
 # optional but recommended: prove the write+reboot+revert mechanics first
-FOOBOT_IP=192.168.1.24 python3 foobot_at.py --selftest
+FOOBOT_IP=192.168.1.42 python3 foobot_at.py --selftest
 
 # go local (LOCAL_IP is auto-detected; override with LOCAL_IP=... if needed)
-FOOBOT_IP=192.168.1.24 python3 foobot_at.py --to-local
+FOOBOT_IP=192.168.1.42 python3 foobot_at.py --to-local
 ```
 
 Within ~30 s the service log shows `CONNECT clientID=<uuid>` and, every ~5 min,
