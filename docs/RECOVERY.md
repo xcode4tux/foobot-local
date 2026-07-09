@@ -28,8 +28,8 @@ PY
 ```
 
 If `10.10.100.254` does not resolve the cloud for you, any DNS that resolves
-`broker-gw-nc.foobot.io` to the real cloud works — try `192.168.1.254` (your
-router) or `8.8.8.8`.
+`broker-gw-nc.foobot.io` to the real cloud works — try your router's IP (its
+default gateway address) or a public resolver like `8.8.8.8`.
 
 ## If your local server died
 
