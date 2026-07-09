@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Runtime files created by the service
+service.log
+server.log
+inject
+led_config.json
+
+# Never commit cloud credentials (optional fallback only)
+cloud_secret.json
+.env

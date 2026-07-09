@@ -1,0 +1,21 @@
+[Unit]
+Description=Foobot local MQTT broker + decoder (replaces the Airboxlab cloud)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust User/paths to your setup. The service listens on TCP 1883.
+User=pi
+WorkingDirectory=/home/pi/foobot-local
+Environment=FOOBOT_UUID=REPLACE_WITH_YOUR_DEVICE_UUID
+Environment=FOOBOT_IP=REPLACE_WITH_YOUR_FOOBOT_LAN_IP
+# Optional Home Assistant push (leave HA_TOKEN empty for dry-run / log only):
+# Environment=HA_URL=http://127.0.0.1:8123
+# Environment=HA_TOKEN=your_long_lived_token
+ExecStart=/usr/bin/python3 -u /home/pi/foobot-local/foobot_service.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
