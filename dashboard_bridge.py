@@ -191,7 +191,14 @@ class Dashboard:
         self.last_ts: dict[int, int] = {}      # group_id -> last written ts
 
     def _cursor(self):
-        self.conn.ping(reconnect=True)
+        try:
+            self.conn.ping()
+        except Exception:
+            try:
+                self.conn.close()
+            except Exception:
+                pass
+            self.conn.connect()
         return self.conn.cursor()
 
     def refresh_mappings(self) -> None:
