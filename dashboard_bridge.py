@@ -27,6 +27,7 @@ Pure stdlib except pymysql. Configured via environment variables:
 Run:  /home/albert/Foobot/backend/.venv/bin/python dashboard_bridge.py
       (systemd: foobot-dashboard-bridge.service, installed by deploy/install.sh)
 """
+import fcntl
 import json
 import os
 import socket
@@ -61,6 +62,8 @@ except (ValueError, TypeError) as e:
     sys.exit(f"invalid DEVICE_GROUP_MAP JSON: {e}")
 AUTO_REGISTER = os.environ.get("AUTO_REGISTER", "1") == "1"
 MAPPING_REFRESH_S = int(os.environ.get("MAPPING_REFRESH", "60"))
+# two live instances would each see the broker fanout and write duplicate rows
+LOCK_FILE = os.environ.get("BRIDGE_LOCK", "/tmp/foobot-dashboard-bridge.lock")
 
 _lock_print = __import__("threading").Lock()
 
@@ -280,6 +283,11 @@ def handle_payload(dash: Dashboard, topic: str, payload: bytes) -> None:
 
 
 def main() -> None:
+    lock_fh = open(LOCK_FILE, "w")
+    try:
+        fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        sys.exit("dashboard_bridge: another instance already holds the lock; exiting")
     dash = Dashboard()
     log(f"[bridge] starting; db {DB['user']}@{DB['host']}:{DB['port']}/{DB['database']}")
     backoff = 2
