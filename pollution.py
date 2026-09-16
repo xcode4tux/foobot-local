@@ -63,14 +63,48 @@ def decode(raw: dict) -> dict:
     Lenient twice over: keys that are missing are skipped, and so are values
     that are not numeric (a bad channel never drops the whole reading)."""
     out = {}
-    for src, div, dst in _FIELDS:
-        if src not in raw:
-            continue
+
+    # Temperature: 'temp' (raw/1000), 'tmp', 'temperature'
+    temp_val = raw.get("temp") if "temp" in raw else (raw.get("tmp") if "tmp" in raw else raw.get("temperature"))
+    if temp_val is not None:
         try:
-            v = float(raw[src]) / div
+            tv = float(temp_val)
+            out["tmp"] = round(tv / 1000.0, 2) if tv > 100 else round(tv, 2)
         except (TypeError, ValueError):
-            continue
-        out[dst] = v if div == 1.0 else round(v, 2)
+            pass
+
+    # Humidity: 'hum' (raw/1000), 'humidity'
+    hum_val = raw.get("hum") if "hum" in raw else raw.get("humidity")
+    if hum_val is not None:
+        try:
+            hv = float(hum_val)
+            out["hum"] = round(hv / 1000.0, 2) if hv > 100 else round(hv, 2)
+        except (TypeError, ValueError):
+            pass
+
+    # PM2.5: 'pm' (raw/94.2), 'pm25'
+    pm_val = raw.get("pm") if "pm" in raw else raw.get("pm25")
+    if pm_val is not None:
+        try:
+            pv = float(pm_val)
+            out["pm"] = round(pv / PM_DIVISOR, 2) if pv > 100 else round(pv, 2)
+        except (TypeError, ValueError):
+            pass
+
+    # CO2: 'co2'
+    if "co2" in raw:
+        try:
+            out["co2"] = float(raw["co2"])
+        except (TypeError, ValueError):
+            pass
+
+    # VOC: 'voc'
+    if "voc" in raw:
+        try:
+            out["voc"] = float(raw["voc"])
+        except (TypeError, ValueError):
+            pass
+
     return out
 
 
