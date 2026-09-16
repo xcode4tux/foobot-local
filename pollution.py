@@ -53,15 +53,24 @@ allpollu coefficients from your own raw/reference pairs.
 PM_DIVISOR = 94.2   # empirical raw->ugm3 factor (raw 936 -> 9.94 ugm3)
 
 
+# raw key -> (divisor, calibrated key); divisor 1 = value already in unit
+_FIELDS = (("co2", 1.0, "co2"), ("voc", 1.0, "voc"), ("temp", 1000.0, "tmp"),
+           ("hum", 1000.0, "hum"), ("pm", PM_DIVISOR, "pm"))
+
+
 def decode(raw: dict) -> dict:
     """Convert a dict of RAW readings (sensor/push) into calibrated units.
-    Lenient: only returns the keys that are present."""
+    Lenient twice over: keys that are missing are skipped, and so are values
+    that are not numeric (a bad channel never drops the whole reading)."""
     out = {}
-    if "co2" in raw:  out["co2"] = float(raw["co2"])              # ppm
-    if "voc" in raw:  out["voc"] = float(raw["voc"])              # ppb
-    if "temp" in raw: out["tmp"] = round(raw["temp"] / 1000, 2)   # C
-    if "hum" in raw:  out["hum"] = round(raw["hum"] / 1000, 2)    # %
-    if "pm" in raw:   out["pm"]  = round(raw["pm"] / PM_DIVISOR, 2)  # ugm3
+    for src, div, dst in _FIELDS:
+        if src not in raw:
+            continue
+        try:
+            v = float(raw[src]) / div
+        except (TypeError, ValueError):
+            continue
+        out[dst] = v if div == 1.0 else round(v, 2)
     return out
 
 

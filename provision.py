@@ -113,7 +113,10 @@ def main():
         return 0
 
     if not args.no_preflight:
-        preflight(args.host)
+        if not preflight(args.host):
+            print("x Refusing to send: preflight failed (not on the Foobot's AP).")
+            print("  Fix the connection (join.sh), or override with --no-preflight.")
+            return 1
 
     try:
         send_command(cmd, host=args.host, port=args.port)

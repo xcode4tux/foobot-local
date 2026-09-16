@@ -78,8 +78,9 @@ def open_session(attempts=1, delay=3.0, verbose=True):
     _require_foobot_ip()
     for i in range(attempts):
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.settimeout(3)
+        ok = False
         try:
+            s.settimeout(3)
             s.sendto(HELLO, (FOOBOT_IP, UDP_PORT))
             ident, _ = s.recvfrom(1024)
             if verbose:
@@ -87,13 +88,17 @@ def open_session(attempts=1, delay=3.0, verbose=True):
             s.sendto(b"+ok", (FOOBOT_IP, UDP_PORT))   # enter command mode (no reply)
             time.sleep(0.3)
             _drain(s)
+            ok = True
             return s
         except socket.timeout:
-            s.close()
-            if i < attempts - 1:
-                if verbose:
-                    print(f"  (no answer, retrying in {delay:.0f}s...)")
-                time.sleep(delay)
+            pass                     # normal: module not answering yet -> retry
+        finally:
+            if not ok:
+                s.close()            # never leak the socket on timeout or OSError
+        if i < attempts - 1:
+            if verbose:
+                print(f"  (no answer, retrying in {delay:.0f}s...)")
+            time.sleep(delay)
     return None
 
 

@@ -176,6 +176,13 @@ If you'd rather not use the command line, `webapp/app.py` serves a single page
 - **Network mode** -- one click to switch the device between your local host and
   the cloud (handy: switch it back to cloud before shutting your host down).
 
+**Securing the UI**: by default the page is open to anyone who can reach the
+host (fine on a trusted LAN). Set `FOOBOT_WEB_TOKEN=<secret>` in the unit to
+require it: every `/api/*` call must then carry the token (the page asks for it
+once, stores it in the session, and sends it as a header; `curl` can pass
+`?token=`). This matters: the page can reprovision Wi-Fi and flip the device
+between your broker and the cloud.
+
 Pure standard library. It shells out to `nmcli`/`rfkill` for the Wi-Fi steps, so
 run it as the provided systemd unit with passwordless sudo for those two:
 
@@ -192,7 +199,29 @@ never stored or logged. It reuses `foobot_at.py` and the service's `inject` /
 
 ---
 
-## Reverting
+## Testing
+
+No hardware needed; everything runs in dry-run on port 11883:
+
+```bash
+tools/run-tests.sh            # from the foobot-wio checkout that wraps this repo
+# or directly:
+python3 pollution.py          # decode + index self-test against a real cloud pair
+python3 sandbox_wire_test.py  # MQTT wire layer: builders, parsers, bridge client
+python3 sandbox_test.py       # device -> service -> HA chain, in-process broker
+python3 sandbox_sub_test.py   # MQTT SUBSCRIBE fan-out (what the Wio Terminal uses)
+```
+
+The MQTT byte-level code (packet builders, parsers, buffered stream reassembly)
+lives in `mqttwire.py`, shared by the broker, the dashboard bridge and the
+tests -- one place to fix a protocol bug.
+
+`tools/run-tests.sh --quick` is the fast subset (syntax + secrets scan, no
+servers); `tools/git-hooks/pre-commit.example` shows how to wire it into a
+pre-commit hook without disturbing existing hooks.
+
+---
+
 
 One command, from any machine on the LAN -- see [`docs/RECOVERY.md`](docs/RECOVERY.md):
 

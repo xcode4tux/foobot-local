@@ -16,6 +16,9 @@ Environment=FOOBOT_UUID=REPLACE_WITH_DEVICE_UUID
 # Environment=LOCAL_IP=192.168.1.50                     # this host (else auto-detected)
 # Environment=WLAN_IFACE=wlan0
 # Environment=FOOBOT_DIR=/home/pi/foobot-local          # shared with foobot_service.py
+# Access token for the UI (recommended): when set, /api/* calls must carry it
+# (the page asks once and remembers it for the session).
+# Environment=FOOBOT_WEB_TOKEN=change-me-long-random
 ExecStart=/usr/bin/python3 -u /home/pi/foobot-local/webapp/app.py
 Restart=on-failure
 RestartSec=5

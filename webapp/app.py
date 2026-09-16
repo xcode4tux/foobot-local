@@ -21,6 +21,9 @@ foobot-web.service.
 
 Configuration (env vars):
   FOOBOT_WEB_PORT  listen port                 (default 8099)
+  FOOBOT_WEB_TOKEN access token; when set, every /api/* call must carry it
+                   (X-Foobot-Token header or ?token= query param). Unset = open
+                   (LAN-trusted homelab default -- see README "Securing the UI").
   WLAN_IFACE       Wi-Fi interface for the AP    (default wlan0)
   FOOBOT_MAC       device MAC (for LAN detection) e.g. aa:bb:cc:dd:ee:ff
   FOOBOT_IP        device's expected/last LAN IP  (helps refresh ARP)
@@ -30,6 +33,7 @@ Configuration (env vars):
   FOOBOT_DIR       dir shared with foobot_service.py (inject / led_config.json;
                                                    default: the repo root)
 """
+import hmac
 import json
 import os
 import re
@@ -38,9 +42,11 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = int(os.environ.get("FOOBOT_WEB_PORT", "8099"))
+AUTH_TOKEN = os.environ.get("FOOBOT_WEB_TOKEN", "")   # empty = no auth (LAN only)
 IFACE = os.environ.get("WLAN_IFACE", "wlan0")
 FOOBOT_MAC = os.environ.get("FOOBOT_MAC", "").lower()   # e.g. aa:bb:cc:dd:ee:ff
 FOOBOT_IP_LAN = os.environ.get("FOOBOT_IP", "")         # expected / last-known LAN IP
@@ -86,7 +92,9 @@ def led_set_brightness(val):
     """Write an immediate brightness command to the broker's inject file.
     NOTE: brightness only reliably DIMS/turns off while the ring is lit. To
     relight a ring that is off, only a reboot works (the "on" button -> /api/led/on)."""
-    val = max(0, min(LED_MAX, int(val)))
+    if not FOOBOT_UUID:
+        raise ValueError("FOOBOT_UUID not configured on the server (LED control needs it)")
+    val = max(0, min(LED_MAX, int(float(val))))
     line = 'device/%s/attribute/brightness|{"brightness": %d}\n' % (FOOBOT_UUID, val)
     with open(INJECT_FILE, "a") as f:
         f.write(line)
@@ -97,19 +105,24 @@ def led_cfg_read():
     cfg = dict(LED_DEFAULTS)
     try:
         with open(LED_CFG) as f:
-            cfg.update({k: v for k, v in json.load(f).items() if k in cfg})
-    except (FileNotFoundError, ValueError):
+            data = json.load(f)
+        if isinstance(data, dict):
+            cfg.update({k: v for k, v in data.items() if k in cfg})
+    except (OSError, ValueError, AttributeError):
         pass
     return cfg
 
 
 def led_cfg_write(data):
-    cfg = {
-        "enabled": bool(data.get("enabled", True)),
-        "off_h": int(data.get("off_h", 22)) % 24,
-        "on_h": int(data.get("on_h", 7)) % 24,
-        "day_val": max(0, min(LED_MAX, int(data.get("day_val", 47)))),
-    }
+    try:
+        cfg = {
+            "enabled": bool(data.get("enabled", True)),
+            "off_h": int(data.get("off_h", 22)) % 24,
+            "on_h": int(data.get("on_h", 7)) % 24,
+            "day_val": max(0, min(LED_MAX, int(data.get("day_val", 47)))),
+        }
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"invalid LED schedule fields: {e}")
     tmp = LED_CFG + ".tmp"
     with open(tmp, "w") as f:
         json.dump(cfg, f)
@@ -211,10 +224,14 @@ def send_frame(ssid, password, log):
 
 LOCK = threading.Lock()
 TASK = {"state": "idle", "log": [], "start": None}   # idle | running | success | failure
+TASK_LOG_MAX = 400        # bound the log: a long-running task polling every 5 s
+                          # must not grow the list (and every /api/log reply) forever
 
 
 def log(msg):
     TASK["log"].append(f"{time.strftime('%H:%M:%S')}  {msg}")
+    if len(TASK["log"]) > TASK_LOG_MAX:
+        del TASK["log"][:-TASK_LOG_MAX]   # keep the most recent lines
 
 
 def cleanup_wlan(ap_ssid):
@@ -367,6 +384,18 @@ def _start_task(target, args=()):
 
 class Handler(BaseHTTPRequestHandler):
 
+    def _authorized(self) -> bool:
+        """Token gate for /api/* when FOOBOT_WEB_TOKEN is set. The token may
+        come as the X-Foobot-Token header (used by the page JS) or a ?token=
+        query param (first page load / curl one-liners)."""
+        if not AUTH_TOKEN:
+            return True
+        got = self.headers.get("X-Foobot-Token", "")
+        if not got:
+            got = (urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                   .get("token", [""])[0])
+        return hmac.compare_digest(got, AUTH_TOKEN)
+
     def _json(self, obj, code=200):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
@@ -376,38 +405,70 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _json_body(self):
-        size = int(self.headers.get("Content-Length") or 0)
+        """Parsed JSON object from the request body. Raises ValueError on
+        anything malformed, so callers can answer 400 instead of a traceback."""
+        try:
+            size = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            raise ValueError("bad Content-Length header")
         if not size:
             return {}
-        return json.loads(self.rfile.read(size).decode("utf-8"))
+        if size > 65536:
+            raise ValueError("request body too large")
+        data = json.loads(self.rfile.read(size).decode("utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("JSON body must be an object")
+        return data
 
     def do_GET(self):
-        if self.path == "/" or self.path.startswith("/index"):
+        path = urllib.parse.urlparse(self.path).path   # strip ?token=... etc.
+        if path == "/" or path.startswith("/index"):
             body = PAGE.encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
-        elif self.path == "/api/status":
+        elif path == "/api/status":
+            if not self._authorized():
+                self._json({"error": "unauthorized"}, 401)
+                return
             present, ip, detail = foobot_on_lan()
             self._json({"foobot_lan": present, "ip": ip, "detail": detail,
                         "wlan": wlan_state(), "task": TASK["state"]})
-        elif self.path == "/api/log":
+        elif path == "/api/log":
+            if not self._authorized():
+                self._json({"error": "unauthorized"}, 401)
+                return
             self._json({"state": TASK["state"], "log": TASK["log"]})
-        elif self.path == "/api/led/config":
+        elif path == "/api/led/config":
+            if not self._authorized():
+                self._json({"error": "unauthorized"}, 401)
+                return
             self._json(led_cfg_read())
         else:
             self._json({"error": "unknown"}, 404)
 
     def do_POST(self):
-        if self.path == "/api/scan":
+        path = urllib.parse.urlparse(self.path).path   # strip ?token=... etc.
+        if path not in ("/api/scan", "/api/provision", "/api/led", "/api/led/on",
+                        "/api/led/config", "/api/mode"):
+            self._json({"error": "unknown"}, 404)
+            return
+        if not self._authorized():
+            self._json({"error": "unauthorized"}, 401)
+            return
+        if path == "/api/scan":
             try:
                 self._json({"networks": scan_wifi()})
             except Exception as e:
                 self._json({"error": str(e)}, 500)
-        elif self.path == "/api/provision":
-            data = self._json_body()
+        if path == "/api/provision":
+            try:
+                data = self._json_body()
+            except ValueError as e:
+                self._json({"error": str(e)}, 400)
+                return
             ap = (data.get("ap") or "").strip()
             ssid = (data.get("ssid") or "").strip()
             pwd = data.get("password") or ""
@@ -416,29 +477,41 @@ class Handler(BaseHTTPRequestHandler):
                 return
             ok, err = _start_task(task_provision, (ap, ssid, pwd))
             self._json({"ok": True} if ok else {"error": err}, 200 if ok else 409)
-        elif self.path == "/api/led":
+        elif path == "/api/led":
             try:
                 val = led_set_brightness(self._json_body().get("brightness", 0))
                 self._json({"ok": True, "brightness": val})
+            except ValueError as e:
+                self._json({"error": str(e)}, 400)
             except Exception as e:
                 self._json({"error": str(e)}, 500)
-        elif self.path == "/api/led/on":
+        elif path == "/api/led/on":
             ok, err = _start_task(task_led_on)
             self._json({"ok": True} if ok else {"error": err}, 200 if ok else 409)
-        elif self.path == "/api/led/config":
+        elif path == "/api/led/config":
             try:
-                self._json({"ok": True, "config": led_cfg_write(self._json_body())})
+                data = self._json_body()
+            except ValueError as e:
+                self._json({"error": str(e)}, 400)
+                return
+            try:
+                self._json({"ok": True, "config": led_cfg_write(data)})
+            except ValueError as e:
+                self._json({"error": str(e)}, 400)
             except Exception as e:
                 self._json({"error": str(e)}, 500)
-        elif self.path == "/api/mode":
-            mode = (self._json_body().get("mode") or "").strip()
+        elif path == "/api/mode":
+            try:
+                data = self._json_body()
+            except ValueError as e:
+                self._json({"error": str(e)}, 400)
+                return
+            mode = (data.get("mode") or "").strip()
             if mode not in ("local", "cloud"):
                 self._json({"error": "invalid mode (local|cloud)"}, 400)
                 return
             ok, err = _start_task(task_switch, (mode,))
             self._json({"ok": True} if ok else {"error": err}, 200 if ok else 409)
-        else:
-            self._json({"error": "unknown"}, 404)
 
     def log_message(self, fmt, *args):
         pass  # no HTTP log (the password only ever travels in a POST body)
@@ -587,11 +660,31 @@ PAGE = """<!doctype html>
 let chosenAp = null;
 let timer = null;
 
+// --- access token (only used when the server runs with FOOBOT_WEB_TOKEN) -----
+function authInit() {
+  const t = new URLSearchParams(location.search).get('token');
+  if (t) {
+    sessionStorage.setItem('footok', t);
+    history.replaceState(null, '', location.pathname);   // keep it out of the URL bar
+  }
+}
+function promptToken() {
+  const t = prompt('This UI is token-protected. Enter the access token (FOOBOT_WEB_TOKEN):');
+  if (t) { sessionStorage.setItem('footok', t); location.reload(); }
+}
+async function api(url, opts) {
+  opts = opts || {};
+  opts.headers = Object.assign({}, opts.headers, {'X-Foobot-Token': sessionStorage.getItem('footok') || ''});
+  const r = await fetch(url, opts);
+  if (r.status === 401) { promptToken(); throw new Error('unauthorized (bad or missing token)'); }
+  return r;
+}
+
 async function refreshStatus() {
   const e = document.getElementById('status');
   e.textContent = 'Checking...';
   try {
-    const r = await (await fetch('/api/status')).json();
+    const r = await (await api('/api/status')).json();
     e.innerHTML = r.foobot_lan
       ? '<span class="badge ok">Foobot on the home network</span> ' +
         '<span class="muted">' + r.detail + '</span>'
@@ -606,19 +699,32 @@ async function scan() {
   const zone = document.getElementById('nets');
   btn.disabled = true; info.textContent = 'Scanning (~10 s)...'; zone.innerHTML = '';
   try {
-    const r = await (await fetch('/api/scan', {method:'POST'})).json();
+    const r = await (await api('/api/scan', {method:'POST'})).json();
     if (r.error) throw r.error;
     if (!r.networks.length) { info.textContent = 'No network seen - scan again.'; return; }
     const n = r.networks.filter(x => x.candidate).length;
     info.textContent = n ? n + ' Foobot candidate(s) found (*).'
                          : 'No obvious Foobot AP - check the blinking LED then rescan.';
     for (const x of r.networks) {
+      // SSIDs are attacker-controlled strings: build the row with DOM APIs /
+      // textContent, never innerHTML (a crafted SSID would inject script).
       const div = document.createElement('div');
       div.className = 'net';
-      div.innerHTML = '<input type="radio" name="ap" value="' + x.ssid.replace(/"/g,'&quot;') + '">' +
-        '<span class="name">' + (x.candidate ? '<span class="star">*</span> ' : '') +
-        x.ssid + '</span><span class="muted">' + x.signal + '% . ' + x.security + '</span>';
-      div.querySelector('input').addEventListener('change', ev => {
+      const radio = document.createElement('input');
+      radio.type = 'radio'; radio.name = 'ap'; radio.value = x.ssid;
+      const name = document.createElement('span');
+      name.className = 'name';
+      if (x.candidate) {
+        const star = document.createElement('span');
+        star.className = 'star'; star.textContent = '*';
+        name.append(star, ' ');
+      }
+      name.append(document.createTextNode(x.ssid));
+      const meta = document.createElement('span');
+      meta.className = 'muted';
+      meta.textContent = x.signal + '% . ' + x.security;
+      div.append(radio, name, meta);
+      radio.addEventListener('change', ev => {
         chosenAp = ev.target.value;
         document.getElementById('btnGo').disabled = false;
         document.getElementById('goInfo').textContent = 'AP chosen: ' + chosenAp;
@@ -637,7 +743,7 @@ async function send() {
   if (!pwd && !confirm('Empty password - send anyway?')) return;
   const btn = document.getElementById('btnGo');
   btn.disabled = true;
-  const r = await (await fetch('/api/provision', {
+  const r = await (await api('/api/provision', {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({ap: chosenAp, ssid: ssid, password: pwd})
   })).json();
@@ -648,7 +754,7 @@ async function send() {
 }
 
 async function pollLog() {
-  const r = await (await fetch('/api/log')).json();
+  const r = await (await api('/api/log')).json();
   const j = document.getElementById('log');
   j.textContent = r.log.join('\\n') || '(nothing yet)';
   j.scrollTop = j.scrollHeight;
@@ -664,7 +770,7 @@ async function pollLog() {
 
 async function led(v) {
   try {
-    const r = await (await fetch('/api/led', {
+    const r = await (await api('/api/led', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({brightness: Number(v)})
     })).json();
@@ -677,7 +783,7 @@ async function led(v) {
 async function ledOn() {
   if (!confirm('Relighting the ring reboots the Foobot (~6 s). Continue?')) return;
   try {
-    const r = await (await fetch('/api/led/on', {method:'POST'})).json();
+    const r = await (await api('/api/led/on', {method:'POST'})).json();
     if (r.error) throw r.error;
     document.getElementById('lum').value = 47;
     document.getElementById('lumVal').textContent = 47;
@@ -688,7 +794,7 @@ async function ledOn() {
 
 async function loadSched() {
   try {
-    const c = await (await fetch('/api/led/config')).json();
+    const c = await (await api('/api/led/config')).json();
     document.getElementById('schEn').checked = !!c.enabled;
     document.getElementById('offH').value = c.off_h;
     document.getElementById('onH').value = c.on_h;
@@ -705,7 +811,7 @@ async function saveSched() {
     day_val: Number(document.getElementById('dayV').value)
   };
   try {
-    const r = await (await fetch('/api/led/config', {
+    const r = await (await api('/api/led/config', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify(body)
     })).json();
@@ -719,7 +825,7 @@ async function switchMode(mode) {
     ? "Switch the Foobot to your local broker? The module reboots (~30 s)."
     : "Put the Foobot back on the cloud (factory config)? The module reboots (~30 s).";
   if (!confirm(txt)) return;
-  const r = await (await fetch('/api/mode', {
+  const r = await (await api('/api/mode', {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({mode: mode})
   })).json();
@@ -729,6 +835,7 @@ async function switchMode(mode) {
   timer = setInterval(pollLog, 1500);
 }
 
+authInit();
 refreshStatus();
 pollLog();
 loadSched();
@@ -740,7 +847,8 @@ loadSched();
 
 def main():
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
-    print(f"Foobot web control on http://0.0.0.0:{PORT}")
+    auth = "token-protected" if AUTH_TOKEN else "NO AUTH (set FOOBOT_WEB_TOKEN!)"
+    print(f"Foobot web control on http://0.0.0.0:{PORT} -- {auth}", flush=True)
     server.serve_forever()
 
 

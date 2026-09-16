@@ -9,7 +9,7 @@ No real device, no network beyond localhost, sandbox port 11883.
 
 Usage: python3 sandbox_sub_test.py
 """
-import os, socket, threading, time
+import os, socket, threading, time, sys
 
 TEST_UUID = "SANDBOXDEVICE001"
 SUB_CID   = "WIO-SUB-TEST"
@@ -118,4 +118,8 @@ def main():
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    code = main()
+    # deterministic exit: the in-process broker's daemon threads print during
+    # interpreter shutdown, which can abort the process and mask the result
+    sys.stdout.flush()
+    os._exit(code)

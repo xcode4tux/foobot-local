@@ -9,7 +9,7 @@ decodes it, computes allpollu, and would push the right sensors.
 
 Usage: python3 sandbox_test.py
 """
-import os, socket, threading, time, io
+import os, socket, threading, time, io, sys
 
 TEST_UUID = "SANDBOXDEVICE001"
 
@@ -82,4 +82,9 @@ def main():
     return 0 if ok else 1
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    code = main()
+    # the in-process service runs daemon threads that print during interpreter
+    # shutdown, which can abort the process and mask the real result; exit
+    # deterministically instead (flush first: os._exit skips atexit flushing)
+    sys.stdout.flush()
+    os._exit(code)

@@ -11,3 +11,6 @@ led_config.json
 # Never commit cloud credentials (optional fallback only)
 cloud_secret.json
 .env
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/

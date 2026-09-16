@@ -37,6 +37,7 @@ import time
 import pymysql
 
 import pollution
+import mqttwire
 
 BROKER_HOST = os.environ.get("BROKER_HOST", "127.0.0.1")
 BROKER_PORT = int(os.environ.get("BROKER_PORT", "1883"))
@@ -74,107 +75,87 @@ def log(msg: str) -> None:
         print(line, flush=True)
 
 
-# --- minimal MQTT 3.1.1 client (mirror of foobot_service.py's server wire) ----
-
-def _enc_len(n: int) -> bytes:
-    out = bytearray()
-    while True:
-        b = n % 128
-        n //= 128
-        if n > 0:
-            b |= 0x80
-        out.append(b)
-        if n == 0:
-            return bytes(out)
-
-
-def _enc_str(s: str) -> bytes:
-    b = s.encode()
-    return len(b).to_bytes(2, "big") + b
-
-
-def _recv_exact(sock: socket.socket, n: int) -> bytes | None:
-    buf = b""
-    while len(buf) < n:
-        chunk = sock.recv(n - len(buf))
-        if not chunk:
-            return None
-        buf += chunk
-    return buf
-
-
-def _read_packet(sock: socket.socket) -> tuple[int, bytes] | None:
-    hdr = _recv_exact(sock, 1)
-    if hdr is None:
-        return None
-    mult, rem = 1, 0
-    for _ in range(4):
-        b = _recv_exact(sock, 1)
-        if b is None:
-            return None
-        rem += (b[0] & 0x7F) * mult
-        if not b[0] & 0x80:
-            return hdr[0] >> 4, _recv_exact(sock, rem) or b""
-        mult *= 128
-    return None
+# --- minimal MQTT 3.1.1 client (wire primitives shared with foobot_service) ----
 
 
 class MqttClient:
-    """CONNECT/SUBSCRIBE/PINGREQ + QoS0 PUBLISH receipt -- all this broker needs."""
+    """CONNECT/SUBSCRIBE/PINGREQ + QoS0 PUBLISH receipt -- all this broker needs.
+
+    Reads go through mqttwire.StreamParser: a keepalive timeout is only acted
+    on at a PACKET boundary. A timeout arriving mid-packet (bytes already
+    consumed) raises ConnectionError -- dropping the half-read packet would
+    desync the stream, so reconnecting is the only safe recovery."""
 
     def __init__(self, host: str, port: int, client_id: str):
         self.addr = (host, port)
         self.client_id = client_id
         self.sock: socket.socket | None = None
+        self._sp = mqttwire.StreamParser()
+
+    # -- wire reading -----------------------------------------------------------
+
+    def _fill(self, deadline: float) -> bool:
+        """recv() more bytes. True if bytes arrived; False on a deadline hit;
+        raises ConnectionError when the broker closed the socket."""
+        assert self.sock is not None
+        self.sock.settimeout(max(deadline - time.monotonic(), 0.01))
+        try:
+            chunk = self.sock.recv(65536)
+        except socket.timeout:
+            return False
+        if not chunk:
+            raise ConnectionError("broker closed the connection")
+        self._sp.feed(chunk)
+        return True
+
+    def _read_packet(self, deadline: float) -> tuple[int, bytes] | None:
+        """(header, body) of the next packet, or None on a deadline hit at a
+        packet boundary (keepalive time)."""
+        while True:
+            pkt = self._sp.next_packet()
+            if pkt is not None:
+                return pkt
+            if not self._fill(deadline):
+                if self._sp.partial:
+                    raise ConnectionError("timeout mid-packet (half-read packet)")
+                return None
+
+    # -- protocol ---------------------------------------------------------------
 
     def connect(self, topic_filter: str) -> None:
+        self._sp = mqttwire.StreamParser()
         self.sock = socket.create_connection(self.addr, timeout=10)
-        self.sock.settimeout(1.0)
-        vh = _enc_str("MQTT") + bytes([4, 0x02]) + KEEPALIVE_S.to_bytes(2, "big")
-        vh += _enc_str(self.client_id)
-        self.sock.sendall(bytes([0x10]) + _enc_len(len(vh)) + vh)
-        pkt = _read_packet(self.sock)
-        if pkt is None or pkt[0] != 2 or pkt[1][1] != 0:
+        self.sock.sendall(mqttwire.build_connect(self.client_id, KEEPALIVE_S))
+        pkt = self._read_packet(time.monotonic() + 10)
+        if pkt is None or pkt[0] >> 4 != 2 or len(pkt[1]) < 2 or pkt[1][1] != 0:
             raise ConnectionError(f"broker CONNACK failed: {pkt!r}")
-        body = b"\x00\x01" + _enc_str(topic_filter) + b"\x00"  # pid 1, qos 0
-        self.sock.sendall(bytes([0x82]) + _enc_len(len(body)) + body)
-        pkt = _read_packet(self.sock)
-        if pkt is None or pkt[0] != 9:
+        self.sock.sendall(mqttwire.build_subscribe([topic_filter], pid=1))
+        pkt = self._read_packet(time.monotonic() + 10)
+        if pkt is None or pkt[0] >> 4 != 9:
             raise ConnectionError(f"broker SUBACK failed: {pkt!r}")
         log(f"[mqtt] connected to {self.addr[0]}:{self.addr[1]}, subscribed {topic_filter}")
 
     def next_publish(self, deadline: float) -> tuple[str, bytes] | None:
         """Block until the next PUBLISH or the ping deadline. Returns None on ping."""
-        assert self.sock is not None
         while True:
-            timeout = max(deadline - time.monotonic(), 0.01)
-            self.sock.settimeout(timeout)
-            try:
-                pkt = _read_packet(self.sock)
-            except socket.timeout:
-                self.sock.sendall(bytes([0xD0, 0x00]))  # PINGREQ
-                return None
+            pkt = self._read_packet(deadline)
             if pkt is None:
-                raise ConnectionError("broker closed the connection")
-            ptype, body = pkt
-            if ptype == 13:          # PINGRESP
-                continue
-            if ptype != 3:           # anything else is not interesting here
-                continue
-            qos = 0
-            i = 0
-            tlen = (body[i] << 8) | body[i + 1]
-            i += 2
-            topic = body[i:i + tlen].decode(errors="replace")
-            i += tlen
-            if qos:                  # broker only fanouts QoS0, but stay safe
-                i += 2
-            return topic, body[i:]
+                assert self.sock is not None
+                self.sock.sendall(mqttwire.PINGREQ)
+                return None
+            hdr, body = pkt
+            if hdr >> 4 != 3:
+                continue           # PINGRESP / anything else: not interesting
+            parsed = mqttwire.parse_publish(hdr & 0x0F, body)
+            if parsed is None:
+                continue           # malformed: skip, stream stays framed
+            topic, _pid, payload = parsed
+            return topic, payload
 
     def close(self) -> None:
         if self.sock is not None:
             try:
-                self.sock.sendall(bytes([0xE0, 0x00]))  # DISCONNECT
+                self.sock.sendall(mqttwire.DISCONNECT)
                 self.sock.close()
             except OSError:
                 pass
@@ -189,6 +170,34 @@ class Dashboard:
         self.mappings: dict[str, int] = {}
         self.mappings_loaded_at = 0.0
         self.last_ts: dict[int, int] = {}      # group_id -> last written ts
+        self.have_unique = False               # UNIQUE(group_id, ts) confirmed?
+        self._ensure_unique_index()
+
+    def _ensure_unique_index(self) -> None:
+        """Best effort: make (group_id, ts) UNIQUE. With it confirmed, write()
+        skips the pre-INSERT SELECT (one DB round trip less per reading) and a
+        lost insert race surfaces as error 1062, handled as a skip. The
+        Dashboard's own writer also treats such rows as duplicates-to-skip, so
+        this matches its model. Existing duplicate rows (or missing ALTER
+        privileges) just leave the dedup purely check-then-insert, still
+        guarded by the instance lock."""
+        try:
+            with self._cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM information_schema.statistics "
+                    "WHERE table_schema = DATABASE() AND table_name = 'readings' "
+                    "AND index_name = 'uniq_group_ts'"
+                )
+                if cur.fetchone() is None:
+                    cur.execute(
+                        "ALTER TABLE readings ADD UNIQUE KEY uniq_group_ts (group_id, ts)"
+                    )
+            self.conn.commit()
+            self.have_unique = True
+            log("[db] UNIQUE(group_id, ts) confirmed on readings")
+        except Exception as e:
+            log(f"[db] could not add UNIQUE(group_id, ts): {e}; "
+                "dedup stays check-then-insert (delete duplicate rows to enable it)")
 
     def _cursor(self):
         try:
@@ -237,25 +246,32 @@ class Dashboard:
         # increasing so replayed bursts never collapse onto one second
         ts = max(ts, self.last_ts.get(group_id, 0) + 1)
         with self._cursor() as cur:
-            cur.execute(
-                "SELECT 1 FROM readings WHERE group_id = %s AND ts = %s LIMIT 1",
-                (group_id, ts),
-            )
-            if cur.fetchone() is not None:
-                return False
-            cur.execute(
-                "INSERT INTO readings "
-                "(ts, group_id, temperature, humidity, dust, co2) "
-                "VALUES (%s, %s, %s, %s, %s, %s)",
-                (
-                    ts,
-                    group_id,
-                    enriched.get("tmp"),
-                    round(enriched["hum"]) if "hum" in enriched else None,
-                    round(enriched["pm"]) if "pm" in enriched else None,
-                    round(enriched["co2"]) if "co2" in enriched else None,
-                ),
-            )
+            try:
+                if not self.have_unique:       # fast path: let the UNIQUE key
+                    cur.execute(               # decide, no SELECT round trip
+                        "SELECT 1 FROM readings WHERE group_id = %s AND ts = %s LIMIT 1",
+                        (group_id, ts),
+                    )
+                    if cur.fetchone() is not None:
+                        return False
+                cur.execute(
+                    "INSERT INTO readings "
+                    "(ts, group_id, temperature, humidity, dust, co2) "
+                    "VALUES (%s, %s, %s, %s, %s, %s)",
+                    (
+                        ts,
+                        group_id,
+                        enriched.get("tmp"),
+                        round(enriched["hum"]) if "hum" in enriched else None,
+                        round(enriched["pm"]) if "pm" in enriched else None,
+                        round(enriched["co2"]) if "co2" in enriched else None,
+                    ),
+                )
+            except pymysql.err.IntegrityError as e:
+                if e.args and e.args[0] == 1062:   # duplicate (group_id, ts):
+                    self.conn.rollback()           # lost a race; same as a skip
+                    return False
+                raise
         self.conn.commit()
         self.last_ts[group_id] = ts
         return True
