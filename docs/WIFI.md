@@ -1,7 +1,7 @@
 # Reconnecting a Foobot to Wi-Fi (without the app)
 
 If your Foobot lost its Wi-Fi (router change, new password, factory reset), you
-normally re-run setup from the mobile app — but the app is gone. This is the
+normally re-run setup from the mobile app -- but the app is gone. This is the
 provisioning protocol the app used, reconstructed by decompiling the official APK
 (`com.airboxlab.foobot`, classes `setup/TCPClient` and `setup/manual/TCPClientManual`).
 
@@ -22,7 +22,7 @@ a Wi-Fi access point and accepts one TCP command:
 | Static-IP variant | `w;<SSID>;<password>;<ip>;<mask>;<gateway>;<dns>` |
 | Effect | the module replies, **reboots**, then joins the requested network |
 
-> ⚠️ The Foobot only supports **2.4 GHz WPA/WPA2** — not WPA3. Make sure your
+> ⚠️ The Foobot only supports **2.4 GHz WPA/WPA2** -- not WPA3. Make sure your
 > target SSID is reachable on 2.4 GHz.
 
 ## Procedure

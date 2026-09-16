@@ -1,6 +1,6 @@
 # foobot-local
 
-**Bring a Foobot air-quality monitor back to life, fully local, after the cloud is gone — no account, no app, no API token.**
+**Bring a Foobot air-quality monitor back to life, fully local, after the cloud is gone -- no account, no app, no API token.**
 
 The [Foobot](https://foobot.io) (by Airboxlab) depends on a cloud backend for its
 app and real-time service. As that backend became unreliable, the device turned
@@ -8,12 +8,12 @@ into a paperweight: it keeps sensing, but nothing collects or displays the data.
 
 This project makes a stock Foobot report to **your own machine** instead of the
 cloud, and decodes its readings **locally**. Once set up, the device needs
-nothing from Airboxlab — it just needs your local host running.
+nothing from Airboxlab -- it just needs your local host running.
 
 > **No cloud credentials are required.** The device speaks plain MQTT to a local
 > broker, and the calibration + pollution index have been reverse-engineered, so
 > the raw readings are interpreted entirely offline. (An *optional* cloud fallback
-> exists and is the only thing that would use an `api.foobot.io` token — you never
+> exists and is the only thing that would use an `api.foobot.io` token -- you never
 > need it for local operation.)
 
 Everything here is **pure Python standard library** (no dependencies) plus a tiny
@@ -28,7 +28,7 @@ TCP 1883, no TLS**, to the hostname `broker-gw-nc.foobot.io`. Two facts make a
 local takeover possible:
 
 1. The module exposes a **remote config channel** (Hi-Flying AT commands over
-   **UDP 48899**) — so you can repoint it from your laptop, no wires, no
+   **UDP 48899**) -- so you can repoint it from your laptop, no wires, no
    proximity, and revert any time.
 2. The **`WSDNS`** setting (the module's DNS server) **persists across reboots**.
    Point it at your host, run a DNS there that resolves the broker hostname to
@@ -46,7 +46,7 @@ local takeover possible:
 ```
 
 Why `WSDNS` and not just changing the broker address? Because the module rewrites
-its broker destination (`SOCKB`) back to the cloud hostname on every reboot —
+its broker destination (`SOCKB`) back to the cloud hostname on every reboot --
 that route does **not** stick. `WSDNS` does. Details in
 [`docs/PROTOCOL.md`](docs/PROTOCOL.md).
 
@@ -76,12 +76,12 @@ that route does **not** stick. `WSDNS` does. Details in
 You need: an always-on Linux host on the same LAN as the Foobot, Python 3, and
 `dnsmasq` (or any DNS you can add one record to).
 
-**0 — (only if the Foobot isn't on your Wi-Fi)** Reconnect it first. Since the
-setup app is gone, use the reconstructed provisioning protocol — see
+**0 -- (only if the Foobot isn't on your Wi-Fi)** Reconnect it first. Since the
+setup app is gone, use the reconstructed provisioning protocol -- see
 [`docs/WIFI.md`](docs/WIFI.md): `scan.sh` → `join.sh` → `provision.py`. Skip this
 step if the device is already on your LAN.
 
-**1 — Find your values.** The Foobot's LAN IP (from your router), and your host's
+**1 -- Find your values.** The Foobot's LAN IP (from your router), and your host's
 LAN IP. Read the device's current config (safe, read-only):
 
 ```bash
@@ -91,7 +91,7 @@ FOOBOT_IP=192.168.1.42 python3 foobot_at.py
 This prints `WSDNS`, `SOCKB`, `WANN`, SSID and firmware. Note the device UUID
 appears as the MQTT clientID once it connects (step 4).
 
-**2 — Point DNS at your host.** Edit `config/dnsmasq-foobot.conf`, replacing
+**2 -- Point DNS at your host.** Edit `config/dnsmasq-foobot.conf`, replacing
 `192.168.1.50` with your host's LAN IP in both places, then:
 
 ```bash
@@ -102,17 +102,17 @@ dig +short broker-gw-nc.foobot.io @127.0.0.1   # -> your host IP
 dig +short api.foobot.io          @127.0.0.1   # -> real cloud IP (still forwarded)
 ```
 
-**3 — Start the local service** (listens on TCP 1883):
+**3 -- Start the local service** (listens on TCP 1883):
 
 ```bash
 FOOBOT_UUID=<device-uuid> FOOBOT_IP=192.168.1.42 python3 foobot_service.py
 ```
 
-With no `HA_TOKEN` it runs in **dry-run** and just logs the decoded readings — a
+With no `HA_TOKEN` it runs in **dry-run** and just logs the decoded readings -- a
 good way to confirm the pipeline before wiring up a dashboard. See
 [Home Assistant](#home-assistant-optional) below to push real sensors.
 
-**4 — Repoint the Foobot to your host** (writes `WSDNS`, reboots the module):
+**4 -- Repoint the Foobot to your host** (writes `WSDNS`, reboots the module):
 
 ```bash
 # optional but recommended: prove the write+reboot+revert mechanics first
@@ -123,9 +123,9 @@ FOOBOT_IP=192.168.1.42 python3 foobot_at.py --to-local
 ```
 
 Within ~30 s the service log shows `CONNECT clientID=<uuid>` and, every ~5 min,
-decoded measurements. Done — the Foobot is now yours.
+decoded measurements. Done -- the Foobot is now yours.
 
-**5 — (optional) Run it as a service.** Edit `systemd/foobot-local.service`
+**5 -- (optional) Run it as a service.** Edit `systemd/foobot-local.service`
 (user, paths, UUID, IP), then:
 
 ```bash
@@ -139,7 +139,7 @@ sudo systemctl enable --now foobot-local
 
 The service can push six sensors (`sensor.foobot_co2`, `_voc`, `_pm25`,
 `_temperature`, `_humidity`, `_pollution`) straight into Home Assistant over its
-REST API — no MQTT integration needed. Create a long-lived token and:
+REST API -- no MQTT integration needed. Create a long-lived token and:
 
 ```bash
 FOOBOT_UUID=<uuid> FOOBOT_IP=<ip> \
@@ -159,7 +159,7 @@ Once the device is on your broker you can drive the ring by appending
 echo 'device/<uuid>/attribute/brightness|{"brightness":0}'  >> inject   # off
 ```
 
-Turning the ring back **on** requires a module reboot (`foobot_at.py`, `AT+Z`) —
+Turning the ring back **on** requires a module reboot (`foobot_at.py`, `AT+Z`) --
 brightness alone won't relight a ring that's off. The built-in night scheduler in
 `foobot_service.py` (`LED_OFF_H`/`LED_ON_H`, or a hot-reloaded `led_config.json`)
 uses this. Full explanation in [`docs/PROTOCOL.md`](docs/PROTOCOL.md).
@@ -169,11 +169,11 @@ uses this. Full explanation in [`docs/PROTOCOL.md`](docs/PROTOCOL.md).
 If you'd rather not use the command line, `webapp/app.py` serves a single page
 (default `http://<host>:8099`) that wraps everything above with a live log:
 
-- **Status** — whether the Foobot is seen on the LAN (by its MAC).
-- **Wi-Fi setup** — scan for the device's config-mode AP and push your home
+- **Status** -- whether the Foobot is seen on the LAN (by its MAC).
+- **Wi-Fi setup** -- scan for the device's config-mode AP and push your home
   Wi-Fi (the `provision.py` flow, no CLI).
-- **LED ring** — on (reboot) / off / brightness, and the night schedule editor.
-- **Network mode** — one click to switch the device between your local host and
+- **LED ring** -- on (reboot) / off / brightness, and the night schedule editor.
+- **Network mode** -- one click to switch the device between your local host and
   the cloud (handy: switch it back to cloud before shutting your host down).
 
 Pure standard library. It shells out to `nmcli`/`rfkill` for the Wi-Fi steps, so
@@ -194,7 +194,7 @@ never stored or logged. It reuses `foobot_at.py` and the service's `inject` /
 
 ## Reverting
 
-One command, from any machine on the LAN — see [`docs/RECOVERY.md`](docs/RECOVERY.md):
+One command, from any machine on the LAN -- see [`docs/RECOVERY.md`](docs/RECOVERY.md):
 
 ```bash
 FOOBOT_IP=<ip> python3 foobot_at.py --to-cloud
@@ -218,7 +218,7 @@ reachable throughout.
 - **Your host becomes the Foobot's dependency.** With `WSDNS` pointed at it, the
   device needs that host up to reach its broker. Give it a stable IP; `RECOVERY.md`
   covers failure.
-- **Do not publish to** `ota`/`mcuota`/`reboot`/`failsafe` topics — see
+- **Do not publish to** `ota`/`mcuota`/`reboot`/`failsafe` topics -- see
   `docs/PROTOCOL.md`.
 
 ## Disclaimer
@@ -230,4 +230,4 @@ network and device.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT -- see [LICENSE](LICENSE).

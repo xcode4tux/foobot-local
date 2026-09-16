@@ -16,7 +16,7 @@ MAC are yours to discover; the *shapes* below are what matter.
   RabbitMQ instance).
 - **CONNECT**: `clientID` = the device UUID, `user=device`, a password field,
   `clean-session=0`, keepalive ~10 s. A permissive broker that accepts any
-  credentials works fine — you do **not** need to know the password.
+  credentials works fine -- you do **not** need to know the password.
 
 ### Topics the device PUBLISHES
 
@@ -38,7 +38,7 @@ Example `sensor/push`:
 `attribute/brightness` (LED brightness ✅ works), `attribute/thresholds` (colour
 thresholds), `attribute/mode`, `attribute/auto_th`, `attribute/pm_cal`,
 `attribute/hum_cal`, `attribute/tmp_cal`, `attribute/pm_comp_trh`, `pattern`,
-`refresh` (*= pull-to-refresh, takes a reading now — NOT a colour command*),
+`refresh` (*= pull-to-refresh, takes a reading now -- NOT a colour command*),
 `refresh_off`, `refresh_cal`, `ping`, `reboot`, `failsafe`, `device`, `com`,
 `envi`, `at`, `mid_by_mac`, `wifi_quality`, `patate` (debug).
 
@@ -56,7 +56,7 @@ Validated against a cloud reading taken at the same instant:
 | Temperature | **÷1000** | °C |
 | Humidity | **÷1000** | % |
 | PM2.5 | **÷94.2** (+ humidity compensation) | µg/m³ |
-| `allpollu` | reversed — see below | % |
+| `allpollu` | reversed -- see below | % |
 
 CO₂ is not independent: `co2 ≈ 3.62 × voc` almost always, i.e. the device derives
 it from VOC. The real inputs are just **pm** and **voc**.
@@ -79,7 +79,7 @@ computes the index locally for your dashboard.
 
 - `{"brightness":0}` on `device/<UUID>/attribute/brightness` turns the ring
   **off** reliably.
-- Once off, **nothing over MQTT reliably turns it back on** — not `brightness:47`,
+- Once off, **nothing over MQTT reliably turns it back on** -- not `brightness:47`,
   not `refresh`. The ring is not a continuously-drivable lamp; the device lights
   it **at boot** and **on air-quality change**, then lets it fade.
 - **The only reliable way to relight it is a module reboot** (`AT+Z`, ~6 s), via
@@ -89,10 +89,10 @@ computes the index locally for your dashboard.
 
 - The module answers on **UDP port 48899**: send `HF-A11ASSISTHREAD`, it replies
   with its identity, send `+ok`, then send `AT+...\r` commands in plain text.
-- ⚠️ The protocol **desyncs** request/response — always flush the socket before
+- ⚠️ The protocol **desyncs** request/response -- always flush the socket before
   each command (`foobot_at.py` does this in `_drain`).
 - This channel is **independent of Wi-Fi/IP**, so the module stays reachable after
-  you repoint it — the revert always works remotely.
+  you repoint it -- the revert always works remotely.
 
 ### Why WSDNS and not SOCKB
 

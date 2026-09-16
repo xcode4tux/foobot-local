@@ -57,7 +57,33 @@ def log(msg):
 
 # --- MQTT wire (minimal 3.1.1, enough for the Foobot) -------------------------
 clients = {}
+subs = {}            # clientID -> set of topic filters (local fan-out extension)
 clients_lock = threading.Lock()
+
+def topic_matches(filt, topic):
+    """MQTT wildcard match ('+' one level, '#' multi-level suffix)."""
+    fp, tp = filt.split("/"), topic.split("/")
+    for i, f in enumerate(fp):
+        if f == "#":
+            return True
+        if i >= len(tp) or (f != "+" and f != tp[i]):
+            return False
+    return len(fp) == len(tp)
+
+def fanout(topic, payload):
+    """Deliver a received PUBLISH to every subscriber whose filter matches.
+    Upstream service only forwarded injected commands to devices; local
+    dashboard clients (e.g. a Wio Terminal) need real subscription delivery."""
+    pkt = build_publish(topic, payload, qos=0)
+    with clients_lock:
+        targets = [(cid, c) for cid, c in clients.items()
+                   if any(topic_matches(f, topic) for f in subs.get(cid, ()))]
+    for cid, c in targets:
+        try:
+            c.sendall(pkt)
+            log(f"   fanout -> {cid} {topic}")
+        except Exception as e:
+            log(f"   fanout failed {cid}: {e!r}")
 
 def recv_exact(sock, n):
     buf = b""
@@ -351,10 +377,16 @@ def handle(conn, addr):
                     handle_sensor_push(payload.decode(errors="replace"))
                 elif t.endswith("/debug/push") or t.endswith("/init/push"):
                     log(f"   {t.rsplit('/',2)[-2]} -> {payload.decode(errors='replace')[:400]}")
+                fanout(t, payload)
             elif ptype == 8:    # SUBSCRIBE
                 i = 0; pid = (body[0] << 8) | body[1]; i = 2; grants = []
+                filters = []
                 while i < len(body):
-                    _, i = read_str(body, i); grants.append(min(body[i], 2)); i += 1
+                    f, i = read_str(body, i); filters.append(f.decode(errors="replace"))
+                    grants.append(min(body[i], 2)); i += 1
+                if myid is not None:
+                    with clients_lock: subs[myid] = set(filters)
+                    log(f"[{peer}] SUBSCRIBE {filters}")
                 conn.sendall(bytes([0x90, 2+len(grants), (pid>>8)&0xff, pid&0xff]) + bytes(grants))
             elif ptype == 12:   # PINGREQ
                 conn.sendall(bytes([0xd0, 0x00]))
@@ -368,6 +400,7 @@ def handle(conn, addr):
         if myid is not None:
             with clients_lock:
                 if clients.get(myid) is conn: del clients[myid]
+                subs.pop(myid, None)
         log(f"-- disconnect {peer}")
 
 def main():
