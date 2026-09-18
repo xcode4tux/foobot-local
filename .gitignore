@@ -7,6 +7,7 @@ service.log
 server.log
 inject
 led_config.json
+retained.json
 
 # Never commit cloud credentials (optional fallback only)
 cloud_secret.json

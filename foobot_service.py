@@ -47,6 +47,7 @@ LOGDIR = "/app" if os.path.isdir("/app") else BASE
 LOG    = os.path.join(LOGDIR, "service.log")
 INJECT = os.path.join(LOGDIR, "inject")
 LED_CFG = os.path.join(LOGDIR, "led_config.json")   # editable night schedule
+RETAINED_FILE = os.path.join(LOGDIR, "retained.json")  # last readings, for restart-parity
 
 LOG_MAX_BYTES = 5 * 1024 * 1024     # rotate service.log above 5 MiB (one .1 backup)
 
@@ -159,6 +160,50 @@ subs = {}            # clientID -> set of topic filters (local fan-out extension
 all_clients = set()  # every live Client, registered or not (caps + idle reaper)
 clients_lock = threading.Lock()
 
+# Retained sensor readings: exact-topic -> last sensor/push payload. Replayed to
+# a client the moment it SUBSCRIBEs, so a subscriber that connects between
+# readings (e.g. a Wio Terminal, which caches nothing and renders only on a live
+# push) paints immediately instead of sitting blank until the next ~5-min reading.
+# In-RAM only: cleared on service restart, refilled by the next publish. Capped so
+# a flood of spoofed device UUIDs on the LAN cannot grow it without bound.
+RETAINED_MAX = 16
+retained = {}        # topic -> payload bytes  (guarded by clients_lock)
+_retained_io_lock = threading.Lock()   # serialize disk writes across conn threads
+
+
+def load_retained():
+    """Seed `retained` from disk at startup so a broker restart does not blank a
+    subscriber (e.g. the Wio) until the next ~5-min reading. Payloads are stored
+    latin-1-encoded (a lossless byte<->str mapping) so the exact raw bytes -- VOC
+    included -- are replayed, which is what the Wio firmware requires."""
+    try:
+        with open(RETAINED_FILE) as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return
+    except Exception as e:
+        log(f"retained: seed load failed ({e!r})")
+        return
+    if not isinstance(data, dict):
+        return
+    for t, s in data.items():
+        if isinstance(t, str) and isinstance(s, str) and len(retained) < RETAINED_MAX:
+            retained[t] = s.encode("latin-1")
+    if retained:
+        log(f"retained: seeded {len(retained)} topic(s) from {RETAINED_FILE}")
+
+
+def save_retained(snapshot):
+    """Atomically persist a snapshot of `retained` (temp file + os.replace)."""
+    tmp = RETAINED_FILE + ".tmp"
+    try:
+        with _retained_io_lock:
+            with open(tmp, "w") as f:
+                json.dump({t: p.decode("latin-1") for t, p in snapshot.items()}, f)
+            os.replace(tmp, RETAINED_FILE)
+    except Exception as e:
+        log(f"retained: save failed ({e!r})")
+
 def fanout(topic, payload):
     """Deliver a received PUBLISH to every subscriber whose filter matches.
     Upstream service only forwarded injected commands to devices; local
@@ -209,7 +254,7 @@ class HaClient:
                 return resp.status
             except (http.client.HTTPException, OSError):
                 try: self.conn.close()
-                except Exception: pass
+                except Exception: pass          # nosec B110 - best-effort close
                 self.conn = None
                 if attempt == 2:
                     return None
@@ -217,7 +262,7 @@ class HaClient:
     def close(self):
         if self.conn is not None:
             try: self.conn.close()
-            except Exception: pass
+            except Exception: pass              # nosec B110 - best-effort close
             self.conn = None
 
 
@@ -508,6 +553,13 @@ def handle(conn, addr):
                     c.send(mqttwire.build_puback(pid))
                 if t.endswith("/sensor/push"):
                     handle_sensor_push(payload.decode(errors="replace"))
+                    snapshot = None
+                    with clients_lock:                       # retain for late subscribers
+                        if t in retained or len(retained) < RETAINED_MAX:
+                            retained[t] = payload
+                            snapshot = dict(retained)
+                    if snapshot is not None:                 # persist for restart-parity
+                        save_retained(snapshot)
                 elif t.endswith("/debug/push") or t.endswith("/init/push"):
                     log(f"   {t.rsplit('/',2)[-2]} -> {payload.decode(errors='replace')[:400]}")
                 fanout(t, payload)
@@ -524,6 +576,14 @@ def handle(conn, addr):
                     with clients_lock: subs.setdefault(myid, set()).update(filters)
                     log(f"[{peer}] SUBSCRIBE {filters}")
                 c.send(mqttwire.build_suback(pid, [q for _, q in sub_list]))
+                # Replay retained readings AFTER the SUBACK (MQTT ordering) so a
+                # freshly-connected subscriber renders the last reading at once.
+                with clients_lock:
+                    hits = [(t, p) for t, p in retained.items()
+                            if any(mqttwire.topic_matches(f, t) for f in filters)]
+                for t, p in hits:
+                    if c.send(mqttwire.build_publish(t, p, qos=0)):
+                        log(f"   replay -> {myid or peer} {t}")
             elif ptype == 12:   # PINGREQ
                 c.send(mqttwire.PINGRESP)
             elif ptype == 14:   # DISCONNECT
@@ -556,6 +616,7 @@ def idle_reaper():
             cl.close()
 
 def main():
+    load_retained()          # restart-parity: replay last readings to early subscribers
     threading.Thread(target=inject_watcher, daemon=True).start()
     threading.Thread(target=cloud_poller, daemon=True).start()
     threading.Thread(target=keepalive_pusher, daemon=True).start()
