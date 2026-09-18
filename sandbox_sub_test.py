@@ -16,7 +16,7 @@ SUB_CID   = "WIO-SUB-TEST"
 
 os.environ["FOOBOT_PORT"] = "11883"
 os.environ["FOOBOT_UUID"] = TEST_UUID
-os.environ["HA_TOKEN"] = ""
+os.environ["HA_TOKEN"] = ""  # nosec B105 - empty env value, not a secret
 os.environ["LED_SCHED"] = "0"
 
 import foobot_service as fs

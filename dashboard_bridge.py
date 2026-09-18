@@ -64,7 +64,7 @@ except (ValueError, TypeError) as e:
 AUTO_REGISTER = os.environ.get("AUTO_REGISTER", "1") == "1"
 MAPPING_REFRESH_S = int(os.environ.get("MAPPING_REFRESH", "60"))
 # two live instances would each see the broker fanout and write duplicate rows
-LOCK_FILE = os.environ.get("BRIDGE_LOCK", "/tmp/foobot-dashboard-bridge.lock")
+LOCK_FILE = os.environ.get("BRIDGE_LOCK", "/tmp/foobot-dashboard-bridge.lock")  # nosec B108 - fixed lock path, env-overridable
 
 _lock_print = __import__("threading").Lock()
 
@@ -97,7 +97,7 @@ class MqttClient:
     def _fill(self, deadline: float) -> bool:
         """recv() more bytes. True if bytes arrived; False on a deadline hit;
         raises ConnectionError when the broker closed the socket."""
-        assert self.sock is not None
+        assert self.sock is not None  # nosec B101 - invariant: called only while connected
         self.sock.settimeout(max(deadline - time.monotonic(), 0.01))
         try:
             chunk = self.sock.recv(65536)
@@ -140,7 +140,7 @@ class MqttClient:
         while True:
             pkt = self._read_packet(deadline)
             if pkt is None:
-                assert self.sock is not None
+                assert self.sock is not None  # nosec B101 - invariant: called only while connected
                 self.sock.sendall(mqttwire.PINGREQ)
                 return None
             hdr, body = pkt
@@ -206,7 +206,7 @@ class Dashboard:
             try:
                 self.conn.close()
             except Exception:
-                pass
+                pass  # nosec B110 - best-effort close before reconnect
             self.conn.connect()
         return self.conn.cursor()
 

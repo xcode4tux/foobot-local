@@ -139,7 +139,7 @@ class FakeBroker(threading.Thread):
         t0 = time.time()
         while self.conn is None and time.time() - t0 < 5:
             time.sleep(0.01)
-        assert self.conn is not None, "fake broker: no connection"
+        assert self.conn is not None, "fake broker: no connection"  # nosec B101 - test helper
 
     def read_packet(self):
         """(header byte, body) of the next packet from the client."""
